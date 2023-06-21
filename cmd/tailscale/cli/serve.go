@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,7 @@ serve https:<port> <mount-point> <source> [off]
   serve tcp:<port> tcp://localhost:<local-port> [off]
   serve tls-terminated-tcp:<port> tcp://localhost:<local-port> [off]
   serve status [--json]
+  serve reset
 `),
 		LongHelp: strings.TrimSpace(`
 *** BETA; all of this is subject to change ***
@@ -84,6 +86,13 @@ EXAMPLES
 				FlagSet: e.newFlags("serve-status", func(fs *flag.FlagSet) {
 					fs.BoolVar(&e.json, "json", false, "output JSON")
 				}),
+				UsageFunc: usageFunc,
+			},
+			{
+				Name:      "reset",
+				Exec:      e.runServeReset,
+				ShortHelp: "reset current serve/funnel config",
+				FlagSet:   e.newFlags("serve-reset", nil),
 				UsageFunc: usageFunc,
 			},
 		},
@@ -412,6 +421,7 @@ func cleanMountPoint(mount string) (string, error) {
 	if mount == "" {
 		return "", errors.New("mount point cannot be empty")
 	}
+	mount = cleanMinGWPathConversionIfNeeded(mount)
 	if !strings.HasPrefix(mount, "/") {
 		mount = "/" + mount
 	}
@@ -420,6 +430,26 @@ func cleanMountPoint(mount string) (string, error) {
 		return mount, nil
 	}
 	return "", fmt.Errorf("invalid mount point %q", mount)
+}
+
+// cleanMinGWPathConversionIfNeeded strips the EXEPATH prefix from the given
+// path if the path is a MinGW(ish) (Windows) shell arg.
+//
+// MinGW(ish) (Windows) shells perform POSIX-to-Windows path conversion
+// converting the leading "/" of any shell arg to the EXEPATH, which mangles the
+// mount point. Strip the EXEPATH prefix if it exists. #7963
+//
+// "/C:/Program Files/Git/foo" -> "/foo"
+func cleanMinGWPathConversionIfNeeded(path string) string {
+	// Only do this on Windows.
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	if _, ok := os.LookupEnv("MSYSTEM"); ok {
+		exepath := filepath.ToSlash(os.Getenv("EXEPATH"))
+		path = strings.TrimPrefix(path, exepath)
+	}
+	return path
 }
 
 func expandProxyTarget(source string) (string, error) {
@@ -682,4 +712,16 @@ func elipticallyTruncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// runServeReset clears out the current serve config.
+//
+// Usage:
+//   - tailscale serve reset
+func (e *serveEnv) runServeReset(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return flag.ErrHelp
+	}
+	sc := new(ipn.ServeConfig)
+	return e.lc.SetServeConfig(ctx, sc)
 }

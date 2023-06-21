@@ -449,6 +449,8 @@ func (b *LocalBackend) NetworkLockStatus() *ipnstate.NetworkLockStatus {
 		filtered[i] = b.tka.filtered[i].Clone()
 	}
 
+	stateID1, _ := b.tka.authority.StateIDs()
+
 	return &ipnstate.NetworkLockStatus{
 		Enabled:       true,
 		Head:          &head,
@@ -457,6 +459,7 @@ func (b *LocalBackend) NetworkLockStatus() *ipnstate.NetworkLockStatus {
 		NodeKeySigned: selfAuthorized,
 		TrustedKeys:   outKeys,
 		FilteredPeers: filtered,
+		StateID:       stateID1,
 	}
 }
 
@@ -882,6 +885,18 @@ func (b *LocalBackend) NetworkLockWrapPreauthKey(preauthKey string, tkaKey key.N
 
 	b.logf("Generated network-lock credential signature using %s", tkaKey.Public().CLIString())
 	return fmt.Sprintf("%s--TL%s-%s", preauthKey, tkaSuffixEncoder.EncodeToString(sig.Serialize()), tkaSuffixEncoder.EncodeToString(priv)), nil
+}
+
+// NetworkLockVerifySigningDeeplink asks the authority to verify the given deeplink
+// URL. See the comment for ValidateDeeplink for details.
+func (b *LocalBackend) NetworkLockVerifySigningDeeplink(url string) tka.DeeplinkValidationResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tka == nil {
+		return tka.DeeplinkValidationResult{IsValid: false, Error: errNetworkLockNotActive.Error()}
+	}
+
+	return b.tka.authority.ValidateDeeplink(url)
 }
 
 func signNodeKey(nodeInfo tailcfg.TKASignInfo, signer key.NLPrivate) (*tka.NodeKeySignature, error) {

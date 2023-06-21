@@ -38,7 +38,9 @@ import (
 	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tempfork/gliderlabs/ssh"
+	"tailscale.com/tsd"
 	"tailscale.com/tstest"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/netmap"
@@ -310,6 +312,10 @@ func (ts *localState) DoNoiseRequest(req *http.Request) (*http.Response, error) 
 
 func (ts *localState) TailscaleVarRoot() string {
 	return ""
+}
+
+func (ts *localState) NodeKey() key.NodePublic {
+	return key.NewNode().Public()
 }
 
 func newSSHRule(action *tailcfg.SSHAction) *tailcfg.SSHRule {
@@ -815,14 +821,14 @@ func TestSSHAuthFlow(t *testing.T) {
 
 func TestSSH(t *testing.T) {
 	var logf logger.Logf = t.Logf
-	eng, err := wgengine.NewFakeUserspaceEngine(logf, 0)
+	sys := &tsd.System{}
+	eng, err := wgengine.NewFakeUserspaceEngine(logf, sys.Set)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := ipnlocal.NewLocalBackend(logf, logid.PublicID{},
-		new(mem.Store),
-		new(tsdial.Dialer),
-		eng, 0)
+	sys.Set(eng)
+	sys.Set(new(mem.Store))
+	lb, err := ipnlocal.NewLocalBackend(logf, logid.PublicID{}, sys, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +851,11 @@ func TestSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc.localUser = u
+	um, err := userLookup(u.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.localUser = um
 	sc.info = &sshConnInfo{
 		sshUser: "test",
 		src:     netip.MustParseAddrPort("1.2.3.4:32342"),
@@ -1128,4 +1138,11 @@ func TestPathFromPAMEnvLineOnNixOS(t *testing.T) {
 		t.Fatalf("no result. file was: err=%v, contents=%s", err, x)
 	}
 	t.Logf("success; got=%q", got)
+}
+
+func TestStdOsUserUserAssumptions(t *testing.T) {
+	v := reflect.TypeOf(user.User{})
+	if got, want := v.NumField(), 5; got != want {
+		t.Errorf("os/user.User has %v fields; this package assumes %v", got, want)
+	}
 }

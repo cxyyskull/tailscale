@@ -49,7 +49,7 @@ import (
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/clientmetric"
 	"tailscale.com/util/multierr"
-	"tailscale.com/wgengine"
+	"tailscale.com/version/distro"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -468,7 +468,7 @@ func (s *peerAPIServer) listen(ip netip.Addr, ifState *interfaces.State) (ln net
 		}
 	}
 
-	if wgengine.IsNetstack(s.b.e) {
+	if s.b.sys.IsNetstack() {
 		ipStr = ""
 	}
 
@@ -780,7 +780,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	getConn := func() (net.Conn, bool) {
+	getConnOrReset := func() (net.Conn, bool) {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			h.logf("ingress: failed hijacking conn")
@@ -798,7 +798,7 @@ func (h *peerAPIHandler) handleServeIngress(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "denied", http.StatusForbidden)
 	}
 
-	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConn, sendRST)
+	h.ps.b.HandleIngressTCPConn(h.peerNode, target, srcAddr, getConnOrReset, sendRST)
 }
 
 func (h *peerAPIHandler) handleServeInterfaces(w http.ResponseWriter, r *http.Request) {
@@ -1090,6 +1090,10 @@ func (h *peerAPIHandler) handlePeerPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errNoTaildrop.Error(), http.StatusInternalServerError)
 		return
 	}
+	if distro.Get() == distro.Unraid && !h.ps.directFileMode {
+		http.Error(w, "Taildrop folder not configured or accessible", http.StatusInternalServerError)
+		return
+	}
 	rawPath := r.URL.EscapedPath()
 	suffix, ok := strings.CutPrefix(rawPath, "/v0/put/")
 	if !ok {
@@ -1234,12 +1238,9 @@ func (h *peerAPIHandler) handleServeMagicsock(w http.ResponseWriter, r *http.Req
 		http.Error(w, "denied; no debug access", http.StatusForbidden)
 		return
 	}
-	eng := h.ps.b.e
-	if ig, ok := eng.(wgengine.InternalsGetter); ok {
-		if _, mc, _, ok := ig.GetInternals(); ok {
-			mc.ServeHTTPDebug(w, r)
-			return
-		}
+	if mc, ok := h.ps.b.sys.MagicSock.GetOK(); ok {
+		mc.ServeHTTPDebug(w, r)
+		return
 	}
 	http.Error(w, "miswired", 500)
 }

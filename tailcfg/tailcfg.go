@@ -98,7 +98,9 @@ type CapabilityVersion int
 //   - 59: 2023-03-16: Client understands Peers[].SelfNodeV4MasqAddrForThisPeer
 //   - 60: 2023-04-06: Client understands IsWireGuardOnly
 //   - 61: 2023-04-18: Client understand SSHAction.SSHRecorderFailureAction
-const CurrentCapabilityVersion CapabilityVersion = 61
+//   - 62: 2023-05-05: Client can notify control over noise for SSHEventNotificationRequest recording failure events
+//   - 63: 2023-06-08: Client understands SSHAction.AllowRemotePortForwarding.
+const CurrentCapabilityVersion CapabilityVersion = 63
 
 type StableID string
 
@@ -2047,6 +2049,10 @@ type SSHAction struct {
 	// to use local port forwarding if requested.
 	AllowLocalPortForwarding bool `json:"allowLocalPortForwarding,omitempty"`
 
+	// AllowRemotePortForwarding, if true, allows accepted connections
+	// to use remote port forwarding if requested.
+	AllowRemotePortForwarding bool `json:"allowRemotePortForwarding,omitempty"`
+
 	// Recorders defines the destinations of the SSH session recorders.
 	// The recording will be uploaded to http://addr:port/record.
 	Recorders []netip.AddrPort `json:"recorders,omitempty"`
@@ -2075,9 +2081,17 @@ type SSHRecorderFailureAction struct {
 	NotifyURL string `json:",omitempty"`
 }
 
-// SSHRecordingFailureNotifyRequest is the JSON payload sent to the NotifyURL
-// when a recording fails.
-type SSHRecordingFailureNotifyRequest struct {
+// SSHEventNotifyRequest is the JSON payload sent to the NotifyURL
+// for an SSH event.
+type SSHEventNotifyRequest struct {
+	// EventType is the type of notify request being sent.
+	EventType SSHEventType
+
+	// ConnectionID uniquely identifies a connection made to the SSH server.
+	// It may be shared across multiple sessions over the same connection in
+	// case a single connection creates multiple sessions.
+	ConnectionID string
+
 	// CapVersion is the client's current CapabilityVersion.
 	CapVersion CapabilityVersion
 
@@ -2093,9 +2107,32 @@ type SSHRecordingFailureNotifyRequest struct {
 	// LocalUser is the user that was resolved from the SSHUser for the local machine.
 	LocalUser string
 
-	// Attempts is the list of recorders that were attempted, in order.
-	Attempts []SSHRecordingAttempt
+	// RecordingAttempts is the list of recorders that were attempted, in order.
+	RecordingAttempts []*SSHRecordingAttempt
 }
+
+// SSHEventType defines the event type linked to a SSH action or state.
+type SSHEventType int
+
+const (
+	UnspecifiedSSHEventType SSHEventType = 0
+	// SSHSessionRecordingRejected is the event that
+	// defines when a SSH session cannot be started
+	// because no recorder is available for session
+	// recording, and the SSHRecorderFailureAction
+	// RejectSessionWithMessage is not empty.
+	SSHSessionRecordingRejected SSHEventType = 1
+	// SSHSessionRecordingTerminated is the event that
+	// defines when session recording has failed
+	// during the session and the SSHRecorderFailureAction
+	// TerminateSessionWithMessage is not empty.
+	SSHSessionRecordingTerminated SSHEventType = 2
+	// SSHSessionRecordingFailed is the event that
+	// defines when session recording is unavailable and
+	// the SSHRecorderFailureAction RejectSessionWithMessage
+	// or TerminateSessionWithMessage is empty.
+	SSHSessionRecordingFailed SSHEventType = 3
+)
 
 // SSHRecordingAttempt is a single attempt to start a recording.
 type SSHRecordingAttempt struct {

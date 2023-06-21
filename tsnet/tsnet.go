@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,7 @@ import (
 	"tailscale.com/net/socks5"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/smallzstd"
+	"tailscale.com/tsd"
 	"tailscale.com/types/logger"
 	"tailscale.com/types/logid"
 	"tailscale.com/types/nettype"
@@ -65,6 +67,12 @@ type Server struct {
 	// state. If empty, a directory is selected automatically
 	// under os.UserConfigDir (https://golang.org/pkg/os/#UserConfigDir).
 	// based on the name of the binary.
+	//
+	// If you want to use multiple tsnet services in the same
+	// binary, you will need to make sure that Dir is set uniquely
+	// for each service. A good pattern for this is to have a
+	// "base" directory (such as your mutable storage folder) and
+	// then append the hostname on the end of it.
 	Dir string
 
 	// Store specifies the state store to use.
@@ -434,7 +442,16 @@ func (s *Server) start() (reterr error) {
 
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		switch runtime.GOOS {
+		case "js", "wasip1":
+			// These platforms don't implement os.Executable (at least as of Go
+			// 1.21), but we don't really care much: it's only used as a default
+			// directory and hostname when they're not supplied. But we can fall
+			// back to "tsnet" as well.
+			exe = "tsnet"
+		default:
+			return err
+		}
 	}
 	prog := strings.TrimSuffix(strings.ToLower(filepath.Base(exe)), ".exe")
 
@@ -482,23 +499,21 @@ func (s *Server) start() (reterr error) {
 	}
 	closePool.add(s.netMon)
 
+	sys := new(tsd.System)
 	s.dialer = &tsdial.Dialer{Logf: logf} // mutated below (before used)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
-		ListenPort: 0,
-		NetMon:     s.netMon,
-		Dialer:     s.dialer,
+		ListenPort:   0,
+		NetMon:       s.netMon,
+		Dialer:       s.dialer,
+		SetSubsystem: sys.Set,
 	})
 	if err != nil {
 		return err
 	}
 	closePool.add(s.dialer)
+	sys.Set(eng)
 
-	tunDev, magicConn, dns, ok := eng.(wgengine.InternalsGetter).GetInternals()
-	if !ok {
-		return fmt.Errorf("%T is not a wgengine.InternalsGetter", eng)
-	}
-
-	ns, err := netstack.Create(logf, tunDev, eng, magicConn, s.dialer, dns)
+	ns, err := netstack.Create(logf, sys.Tun.Get(), eng, sys.MagicSock.Get(), s.dialer, sys.DNSManager.Get())
 	if err != nil {
 		return fmt.Errorf("netstack.Create: %w", err)
 	}
@@ -522,12 +537,13 @@ func (s *Server) start() (reterr error) {
 			return err
 		}
 	}
+	sys.Set(s.Store)
 
 	loginFlags := controlclient.LoginDefault
 	if s.Ephemeral {
 		loginFlags = controlclient.LoginEphemeral
 	}
-	lb, err := ipnlocal.NewLocalBackend(logf, s.logid, s.Store, s.dialer, eng, loginFlags)
+	lb, err := ipnlocal.NewLocalBackend(logf, s.logid, sys, loginFlags)
 	if err != nil {
 		return fmt.Errorf("NewLocalBackend: %v", err)
 	}
